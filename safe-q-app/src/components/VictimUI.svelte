@@ -3,6 +3,7 @@
     export let countdown = 10;
     export let cancelAlarm = () => {};
     export let beep; // For binding the audio element
+    export let acceleration = { x: 0, y: 0, z: 0 };
 </script>
 
 <div class="h-screen w-full flex flex-col items-center justify-center p-6 text-center font-sans transition-all duration-500"
@@ -22,6 +23,27 @@
       </div>
       <h1 class="text-2xl font-bold tracking-wider text-white">SYSTEM ARMED</h1>
       <p class="text-cyan-400/70">Monitoring for significant impact...</p>
+      
+      <div class="w-full max-w-sm mx-auto space-y-2 text-left">
+        <h2 class="text-lg font-bold text-white">Sensor Data</h2>
+        <table class="w-full text-sm text-cyan-400/80">
+          <tbody>
+            <tr>
+              <td class="font-bold">X:</td>
+              <td>{acceleration.x.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td class="font-bold">Y:</td>
+              <td>{acceleration.y.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td class="font-bold">Z:</td>
+              <td>{acceleration.z.toFixed(2)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
     </div>
   {/if}
 

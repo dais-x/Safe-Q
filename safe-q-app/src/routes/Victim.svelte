@@ -9,6 +9,7 @@
   let motionListener;
   let beep; // This will be bound to the audio element in VictimUI
   let armed = false; // System is not armed by default
+  let acceleration = { x: 0, y: 0, z: 0 };
 
   // Set a threshold for shake detection (m/s^2). This value may need tuning.
   const SHAKE_THRESHOLD = 15;
@@ -58,6 +59,7 @@
       }
 
       motionListener = await Motion.addListener('accel', (event) => {
+        acceleration = event.acceleration;
         const { x, y, z } = event.acceleration;
         const magnitude = Math.sqrt(x * x + y * y + z * z);
         
@@ -96,5 +98,5 @@
     </button>
   </div>
 {:else}
-  <VictimUI {status} {countdown} {cancelAlarm} bind:beep={beep} />
+  <VictimUI {status} {countdown} {cancelAlarm} bind:beep={beep} {acceleration} />
 {/if}

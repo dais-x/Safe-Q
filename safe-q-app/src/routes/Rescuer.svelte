@@ -1,31 +1,16 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
   import RescuerUI from '../components/RescuerUI.svelte';
   
-  let signal = 0; // 0 to 100
+  let bleDevices = [
+    { name: 'Victim Beacon 1', rssi: -60 },
+    { name: 'Victim Beacon 2', rssi: -75 },
+  ];
 
-  // Keyboard controls for the DEMO (Arrow Up/Down)
-  function handleKeydown(e) {
-    if (e.key === 'ArrowUp') {
-      signal = Math.min(signal + 10, 100);
-    }
-    if (e.key === 'ArrowDown') {
-      signal = Math.max(signal - 10, 0);
-    }
-  }
+  let nanDevices = [
+    { name: 'Victim Phone 1', distance: 10 },
+    { name: 'Victim Phone 2', distance: 25 },
+  ];
 
-  onMount(() => {
-    // Listen for key presses
-    if (typeof window !== 'undefined') {
-        window.addEventListener('keydown', handleKeydown);
-    }
-  });
-
-  onDestroy(() => {
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('keydown', handleKeydown);
-    }
-  });
 </script>
 
-<RescuerUI {signal} />
+<RescuerUI {bleDevices} {nanDevices} />
