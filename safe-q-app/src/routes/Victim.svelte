@@ -10,7 +10,7 @@
   let beep; // This will be bound to the audio element in VictimUI
 
   // Set a threshold for shake detection (m/s^2). This value may need tuning.
-  const SHAKE_THRESHOLD = 2; 
+  const SHAKE_THRESHOLD = 15; 
 
   // This function is called when a significant shake is detected
   function triggerEarthquake() {
