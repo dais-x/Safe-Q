@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { Motion } from '@capacitor/motion';
   import { App } from '@capacitor/app';
+  // import { Battery } from '@capacitor/battery'; // Commented out due to build issues
 
   export let navigate;
 
@@ -10,6 +11,7 @@
   let timer;
   let motionListener;
   let beep; // This will be bound to the audio element
+  let activeSignal = ''; // 'NAN' or 'BLE'
 
   // Algorithm state
   let shakeCount = 0;
@@ -17,14 +19,23 @@
   let lastShakeTime = 0;
 
   // Algorithm parameters
-  const G_FORCE_THRESHOLD = 6.0; // Gs
+  const G_FORCE_THRESHOLD = 1.2; // Gs
   const SHAKE_COUNT_THRESHOLD = 3; // Number of shakes in time window
   const SHAKE_TIME_WINDOW = 1000; // ms (how long to count shakes)
   const SHAKE_DEBOUNCE_TIME = 200; // ms (min time between shakes to count as distinct)
 
-  function triggerAlert() {
+  async function triggerAlert() {
     if (status !== 'monitoring') return;
     
+    // Battery check logic (temporarily commented out/simplified until cordova-plugin-battery-status is integrated)
+    // const batteryStatus = await Battery.getStatus();
+    // if (batteryStatus.batteryLevel > 0.4) {
+    //   activeSignal = 'NAN';
+    // } else {
+    //   activeSignal = 'BLE';
+    // }
+    activeSignal = 'BLE'; // Default to BLE for now
+
     if (beep) {
       beep.currentTime = 0; // Rewind to start
       beep.play();
@@ -163,7 +174,7 @@
   {:else if status === 'trapped'}
     <div class="flex flex-col items-center justify-center text-red-800 space-y-4">
       <h1 class="text-3xl font-bold tracking-wider animate-pulse">SOS BROADCASTING</h1>
-      <p class="text-red-600">BLE Signal Active</p>
+      <p class="text-red-600">{activeSignal} Signal Active</p>
     </div>
   {/if}
 
