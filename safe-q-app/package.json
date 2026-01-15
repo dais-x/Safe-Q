@@ -27,6 +27,7 @@
     "@capacitor/motion": "^8.0.0",
     "@capacitor/network": "^8.0.0",
     "cordova-plugin-background-mode": "^0.7.3",
+    "cordova-plugin-battery-status": "^2.0.3",
     "cordova-plugin-device": "^3.0.0",
     "tinro": "^0.6.12"
   }

@@ -19,7 +19,7 @@
   let lastShakeTime = 0;
 
   // Algorithm parameters
-  const G_FORCE_THRESHOLD = 1.2; // Gs
+  const G_FORCE_THRESHOLD = 0.7; // Gs
   const SHAKE_COUNT_THRESHOLD = 3; // Number of shakes in time window
   const SHAKE_TIME_WINDOW = 1000; // ms (how long to count shakes)
   const SHAKE_DEBOUNCE_TIME = 200; // ms (min time between shakes to count as distinct)
