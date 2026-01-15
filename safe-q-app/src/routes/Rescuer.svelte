@@ -1,68 +1,88 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { App } from '@capacitor/app';
   import { BleClient, ScanMode } from '@capacitor-community/bluetooth-le';
 
   export let navigate;
 
   let bleDevices = [];
-  let nanDevices = []; // Placeholder for future NAN implementation
   let isScanning = false;
   let error = null;
+  let appReadyListener;
 
   async function startBleScan() {
     try {
-      isScanning = true;
       error = null;
-      bleDevices = []; // Clear previous results
+      isScanning = true;
+      bleDevices = [];
 
+      console.log('Attempting to initialize BleClient...');
       await BleClient.initialize();
-
-      // Android requires location services to be enabled for Bluetooth scanning
-      if ((await BleClient.isEnabled()) === false) {
-        throw new Error('Bluetooth is not enabled.');
-      }
-      // You might want to prompt the user to enable it.
+      console.log('BleClient initialized.');
       
-      // Request permissions
-      const hasPermissions = await BleClient.requestLEScan({
-        scanMode: ScanMode.SCAN_MODE_LOW_LATENCY,
-      });
+      // Log the BleClient object to inspect its properties in the console
+      console.log('BleClient object:', BleClient);
 
-      // Start scanning
+      console.log('Starting BLE scan...');
       await BleClient.startLEScan(
         {
-          services: [], // Scan for all services
+          scanMode: ScanMode.SCAN_MODE_LOW_LATENCY,
+          services: [],
         },
         (result) => {
-          // Add discovered devices to the list, avoiding duplicates
-          if (!bleDevices.some(d => d.device.deviceId === result.device.deviceId)) {
-            bleDevices = [...bleDevices, result];
+          if (result && result.device) {
+            const existingDeviceIndex = bleDevices.findIndex(d => d.device.deviceId === result.device.deviceId);
+            if (existingDeviceIndex > -1) {
+              bleDevices[existingDeviceIndex] = result;
+              bleDevices = [...bleDevices];
+            } else {
+              bleDevices = [...bleDevices, result];
+            }
           }
         }
       );
 
-      // Stop scanning after 10 seconds
+      // Stop scanning after a predefined time
       setTimeout(async () => {
-        await BleClient.stopLEScan();
-        isScanning = false;
-      }, 10000);
+        await stopBleScan();
+      }, 15000);
 
     } catch (err) {
-      error = err.message;
+      console.error('BLE Scan Error:', err);
+      if (err.message.includes('BLUETOOTH_SCAN')) {
+        error = 'Bluetooth permission was denied. Please grant permission in app settings.';
+      } else if (err.message.includes('enabled')) {
+        error = 'Bluetooth is not enabled. Please turn on Bluetooth.';
+      } else {
+        error = `Error: ${err.message}`;
+      }
       isScanning = false;
     }
   }
 
+  async function stopBleScan() {
+    try {
+      await BleClient.stopLEScan();
+      console.log('BLE scan stopped.');
+    } catch (err) {
+      console.error('Error stopping scan:', err);
+    }
+    isScanning = false;
+  }
+
   onMount(() => {
-    startBleScan();
+    // Wait for the Capacitor app to be fully ready before using plugins
+    appReadyListener = App.addListener('appReady', () => {
+      console.log('App is ready. Starting BLE scan.');
+      startBleScan();
+    });
   });
 
   onDestroy(async () => {
-    try {
-      await BleClient.stopLEScan();
-    } catch (err) {
-      // Ignore errors on stop
+    if (appReadyListener) {
+      await appReadyListener.remove();
     }
+    await stopBleScan();
   });
 
 </script>
@@ -73,23 +93,25 @@
       <h1 class="text-xl font-bold text-gray-800">RESCUE SCANNER</h1>
       <p class="text-xs text-gray-500">{isScanning ? 'Scanning for devices...' : 'Scan complete.'}</p>
     </div>
+    <button on:click={startBleScan} disabled={isScanning} class="btn btn-rescuer text-sm py-2 px-4">
+      Rescan
+    </button>
   </div>
 
   {#if error}
     <div class="p-4 m-4 bg-red-100 text-red-700 rounded-lg">
       <p><strong>Error:</strong> {error}</p>
-      <p class="text-sm">Please ensure Bluetooth and Location services are enabled.</p>
     </div>
   {/if}
 
   <div class="w-full px-6 mt-6">
     <h2 class="text-lg font-bold text-gray-800">BLE Devices Discovered</h2>
     <ul class="mt-2 space-y-2">
-      {#each bleDevices as device (device.device.deviceId)}
+      {#each bleDevices.sort((a, b) => b.rssi - a.rssi) as device (device.device.deviceId)}
         <li class="p-4 bg-white rounded-lg border border-gray-200">
           <div class="flex justify-between items-center">
             <span class="font-bold text-gray-800">{device.device.name || 'Unnamed Device'}</span>
-            <span class="text-sm text-gray-600">{device.rssi} dBm</span>
+            <span class="text-sm font-bold text-gray-800">{device.rssi} dBm</span>
           </div>
           <p class="text-xs text-gray-500">{device.device.deviceId}</p>
         </li>
