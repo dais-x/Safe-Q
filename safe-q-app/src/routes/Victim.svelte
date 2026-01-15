@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { App } from '@capacitor/app';
+  import WifiAware from '../plugins/wifi-aware';
 
   export let navigate;
 
@@ -30,8 +31,19 @@
   async function triggerAlarm() {
     if (status !== 'monitoring') return;
     
-    if (currentBatteryLevel > 40) activeSignal = 'NAN';
-    else activeSignal = 'BLE';
+    if (currentBatteryLevel > 40) {
+      activeSignal = 'NAN';
+      try {
+        await WifiAware.startPublishing();
+        console.log("NAN Publishing service started.");
+      } catch (e) {
+        console.error("NAN Publishing failed", e);
+        activeSignal = 'BLE'; // Fallback to BLE
+      }
+    } else {
+      activeSignal = 'BLE';
+      // Add BLE advertising logic here in the future
+    }
 
     if (beep) {
       beep.currentTime = 0;
@@ -58,6 +70,7 @@
       beep.pause();
       beep.currentTime = 0;
     }
+    WifiAware.stop();
   }
 
 	function startSensors() {
@@ -98,6 +111,7 @@
     stopSensors();
     if (timer) clearInterval(timer);
     window.removeEventListener("batterystatus", onBatteryStatus, false);
+    WifiAware.stop();
   });
 </script>
 
