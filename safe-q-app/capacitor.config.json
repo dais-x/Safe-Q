@@ -1,5 +1,8 @@
 {
   "appId": "com.safeq.app",
   "appName": "Safe-Q",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
 }

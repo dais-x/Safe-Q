@@ -1,81 +1,97 @@
 <script>
-  import { Router, Route, Link, useLocation } from "svelte-routing";
-  import Home from "./routes/Home.svelte";
-  import Victim from "./routes/Victim.svelte";
-  import Rescuer from "./routes/Rescuer.svelte";
+  import Victim from './routes/Victim.svelte';
+  import Rescuer from './routes/Rescuer.svelte';
 
-  export let url = "";
-  const location = useLocation();
+  let currentView = 'home'; // 'home', 'victim', 'rescuer'
 
-  let showNav = false;
-  $: {
-    // The useLocation hook is reactive, so this code will re-run when the path changes.
-    // We show the nav on any page that is not the home page.
-    showNav = $location.pathname !== '/';
+  function navigate(view) {
+    currentView = view;
   }
 </script>
 
-<Router {url}>
-  <main>
-    <Route path="victim" component="{Victim}" />
-    <Route path="rescuer" component="{Rescuer}" />
-    <Route path="/" component="{Home}" />
-  </main>
+<main class="app-container">
+  {#if currentView === 'home'}
+    <h1 class="app-title">SafeQ</h1>
 
-  {#if showNav}
-    <nav>
-      <Link to="/">Home</Link>
-      <Link to="victim">Victim</Link>
-      <Link to="rescuer">Rescuer</Link>
-    </nav>
+    <div class="button-group">
+      <button on:click={() => navigate('victim')} class="btn btn-victim">
+        Victim
+      </button>
+      
+      <button on:click={() => navigate('rescuer')} class="btn btn-rescuer">
+        Rescuers
+      </button>
+    </div>
+  {:else if currentView === 'victim'}
+    <Victim {navigate} />
+  {:else if currentView === 'rescuer'}
+    <Rescuer {navigate} />
   {/if}
-</Router>
+</main>
 
 <style>
-  nav {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    width: 100%;
+  /* I added :global(body) so the background covers the whole page 
+     even though this is just one component */
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #f8f9fa;
+    height: 100vh;
     display: flex;
-    justify-content: space-around;
+    justify-content: center;
     align-items: center;
-    background-color: #0F172A; /* bg-slate-900 */
-    border-top: 1px solid #1E293B; /* border-slate-700 */
-    z-index: 50;
-    height: 60px;
   }
 
-  :global(nav a) {
-    color: #94A3B8; /* text-slate-400 */
-    text-decoration: none;
-    font-family: sans-serif;
-    font-weight: bold;
-    padding: 0.5rem 1rem;
-    border-radius: 0.5rem;
-    transition: all 0.2s ease-in-out;
+  .app-container {
+    width: 100%;
+    max-width: 400px;
+    padding: 20px;
+    text-align: center;
   }
 
-  :global(nav a:hover) {
+  .app-title {
+    font-size: 3rem;
+    font-weight: 800;
+    color: #1a1a1a;
+    margin-bottom: 50px;
+    letter-spacing: -1px;
+  }
+
+  .button-group {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .btn {
+    border: none;
+    width: 100%;
+    padding: 20px;
+    border-radius: 16px;
+    font-size: 1.2rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
     color: white;
-    background-color: #1E293B; /* bg-slate-700 */
-  }
-  
-  :global(nav a.active) {
-    color: #67E8F9; /* text-cyan-300 */
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    text-decoration: none;
   }
 
-  main {
-    /* Only add bottom padding if the nav is showing */
-    padding-bottom: var(--nav-height, 0);
+  .btn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+  }
+
+  .btn:active {
+    transform: scale(0.98);
+  }
+
+  .btn-victim {
+    background-color: #ff4757;
+  }
+
+  .btn-rescuer {
+    background-color: #3742fa;
   }
 </style>
-
-<svelte:head>
-  <style>
-    /* Use a CSS variable to dynamically set the padding based on nav visibility */
-    :root {
-      --nav-height: {showNav ? '60px' : '0'};
-    }
-  </style>
-</svelte:head>
