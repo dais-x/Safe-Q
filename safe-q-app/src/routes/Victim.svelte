@@ -1,6 +1,5 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { Motion } from '@capacitor/motion';
   import { App } from '@capacitor/app';
 
   export let navigate;
@@ -9,42 +8,18 @@
   let status = 'monitoring'; // 'monitoring', 'warning', 'trapped'
   let countdown = 10;
   let timer;
-  let motionListener;
-  let beep; // This will be bound to the audio element
-  let activeSignal = ''; // 'NAN' or 'BLE'
-  let currentBatteryLevel = 100; // Initialize with a default value
+  let beep;
+  let activeSignal = '';
+  let currentBatteryLevel = 100;
 
-  // -- Hackathon Algorithm: State & Parameters --
-
-  // A low-pass filter helps smooth out noisy, high-frequency data from the accelerometer.
-  // A higher `filterFactor` means more smoothing. 0.0 means no smoothing.
-  const LOW_PASS_FILTER_FACTOR = 0.1;
-  let smoothedMagnitude = 0;
-
-  // -- Stage 1: Initial Jolt Detection --
-  // This threshold needs to be high enough to ignore everyday bumps.
-  // It acts as the "wake-up" call for the algorithm.
-  const TRIGGER_G_FORCE = 2.0; // Gs
-
-  // -- Stage 2: Sustained Shaking Analysis --
-  // Once triggered, we enter a monitoring window to confirm a real earthquake.
-  const MONITORING_WINDOW_MS = 3000; // 3 seconds
-
-  // This threshold is lower. We're looking for continuous, significant shaking,
-  // not necessarily huge spikes.
-  const SUSTAINED_G_FORCE = 0.6; // Gs
-  
-  // We count how many times the G-force exceeds the sustained threshold.
-  const SUSTAINED_SHAKE_COUNT_THRESHOLD = 8;
-
-  // We also measure the "energy" of the event by accumulating the G-force.
-  // This helps differentiate a long, gentle wobble from a short, violent shake.
-  const ENERGY_THRESHOLD = 15;
-
-  let isMonitoring = false;
-  let monitoringStartTime = 0;
-  let sustainedShakeCount = 0;
-  let totalEnergy = 0;
+	// --- Sensor Data ---
+	let sensorData = {
+		accel: { x: 0, y: 0, z: 0 },
+		motion: 0
+	};
+	
+  // --- Fall Detection ---
+	const FALL_THRESHOLD = 30; // ~3g impact in m/s^2
 
   // --- Functions ---
 
@@ -52,15 +27,11 @@
     currentBatteryLevel = status.level;
   }
 
-  async function triggerAlert() {
+  async function triggerAlarm() {
     if (status !== 'monitoring') return;
     
-    // Determine active signal based on current battery level
-    if (currentBatteryLevel > 40) {
-      activeSignal = 'NAN';
-    } else {
-      activeSignal = 'BLE';
-    }
+    if (currentBatteryLevel > 40) activeSignal = 'NAN';
+    else activeSignal = 'BLE';
 
     if (beep) {
       beep.currentTime = 0;
@@ -79,13 +50,6 @@
     }, 1000);
   }
 
-  function resetDetectionState() {
-    isMonitoring = false;
-    monitoringStartTime = 0;
-    sustainedShakeCount = 0;
-    totalEnergy = 0;
-  }
-
   function cancelAlarm() {
     clearInterval(timer);
     status = 'monitoring';
@@ -94,104 +58,61 @@
       beep.pause();
       beep.currentTime = 0;
     }
-    resetDetectionState();
   }
 
-  async function startMonitoring() {
-    try {
-      // Enable background mode for continuous operation
-      if (window.cordova && window.cordova.plugins.backgroundMode) {
-        window.cordova.plugins.backgroundMode.enable();
-        window.cordova.plugins.backgroundMode.requestIgnoreBatteryOptimizations();
-        window.cordova.plugins.backgroundMode.on('activate', () => {
-          window.cordova.plugins.backgroundMode.configure({
-              title: 'Safe-Q is running',
-              text: 'Monitoring for earthquakes in the background.'
-          });
-        });
-      }
+	function startSensors() {
+		if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
+			window.addEventListener('devicemotion', handleMotion, true);
+		}
+	}
 
-      // Request motion sensor permissions for iOS
-      if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-        const permission = await DeviceMotionEvent.requestPermission();
-        if (permission !== 'granted') return;
-      }
+	function stopSensors() {
+		if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
+			window.removeEventListener('devicemotion', handleMotion, true);
+		}
+	}
 
-      // -- Main Algorithm Listener --
-      motionListener = await Motion.addListener('accel', (event) => {
-        const { x, y, z } = event.acceleration;
-        const magnitude = Math.sqrt(x*x + y*y + z*z) / 9.81;
+	function handleMotion(event) {
+		const { x, y, z } = event.accelerationIncludingGravity || { x:0, y:0, z:0 };
+		sensorData.accel = { 
+			x: (x || 0).toFixed(2), 
+			y: (y || 0).toFixed(2), 
+			z: (z || 0).toFixed(2) 
+		};
+		
+		const mag = Math.sqrt(x*x + y*y + z*z);
+		sensorData.motion = mag.toFixed(2);
 
-        // Apply the low-pass filter to the raw magnitude
-        smoothedMagnitude = (magnitude * (1 - LOW_PASS_FILTER_FACTOR)) + (smoothedMagnitude * LOW_PASS_FILTER_FACTOR);
-
-        const now = Date.now();
-
-        if (!isMonitoring) {
-          // STAGE 1: Look for the initial high-G jolt
-          if (smoothedMagnitude > TRIGGER_G_FORCE) {
-            isMonitoring = true;
-            monitoringStartTime = now;
-            sustainedShakeCount = 1; // The trigger event counts as the first shake
-            totalEnergy = smoothedMagnitude;
-          }
-        } else {
-          // STAGE 2: We are in the monitoring window
-          const elapsedTime = now - monitoringStartTime;
-
-          if (elapsedTime > MONITORING_WINDOW_MS) {
-            // -- Window has ended, time to decide --
-            if (sustainedShakeCount >= SUSTAINED_SHAKE_COUNT_THRESHOLD && totalEnergy >= ENERGY_THRESHOLD) {
-              triggerAlert();
-            }
-            // Reset for the next event
-            resetDetectionState();
-          } else {
-            // -- Still in the window, accumulate data --
-            totalEnergy += smoothedMagnitude;
-            if (smoothedMagnitude > SUSTAINED_G_FORCE) {
-              sustainedShakeCount++;
-            }
-          }
-        }
-      });
-    } catch (e) {
-      console.error("Failed to initialize sensors or background mode.", e);
-    }
-  }
+		if (mag > FALL_THRESHOLD) {
+			triggerAlarm();
+		}
+	}
 
   onMount(() => {
-    App.addListener('appStateChange', ({ isActive }) => {
-      // Logic for background state can be added here if needed
-    });
-
+    App.addListener('appStateChange', ({ isActive }) => {});
     window.addEventListener("batterystatus", onBatteryStatus, false);
-    
-    startMonitoring();
+    startSensors();
   });
 
   onDestroy(() => {
-    if (motionListener) motionListener.remove();
+    stopSensors();
     if (timer) clearInterval(timer);
     window.removeEventListener("batterystatus", onBatteryStatus, false);
-    if (window.cordova && window.cordova.plugins.backgroundMode) {
-      window.cordova.plugins.backgroundMode.disable();
-    }
   });
 </script>
 
 <div class="w-full">
   {#if status === 'monitoring'}
     <div class="flex flex-col items-center justify-center text-gray-800 space-y-4">
-      <h1 class="text-2xl font-bold tracking-wider">Monitoring...</h1>
-      <p class="text-gray-600">This app is continuously monitoring for earthquakes.</p>
-      <div class="text-xs text-gray-400">
-        (G-Force: {smoothedMagnitude.toFixed(2)})
-      </div>
+      <h1 class="text-2xl font-bold tracking-wider">Monitoring for Falls</h1>
+			<p class="text-gray-600">Using device motion sensors.</p>
+      <div class="text-xs text-gray-400 font-mono">
+				<p>Motion: {sensorData.motion} m/s²</p>
+			</div>
     </div>
   {:else if status === 'warning'}
     <div class="text-gray-800">
-      <h2 class="text-xl font-bold uppercase tracking-widest">Impact Detected</h2>
+      <h2 class="text-xl font-bold uppercase tracking-widest">Fall Detected</h2>
       <h1 class="text-9xl font-bold my-4">{countdown}</h1>
       <p>Are you okay?</p>
     </div>
