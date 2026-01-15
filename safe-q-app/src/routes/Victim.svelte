@@ -1,249 +1,213 @@
 <script>
-	import { onMount, onDestroy } from 'svelte';
-	import { App } from '@capacitor/app';
-	import { KeepAwake } from '@capacitor-community/keep-awake';
-	import { Geolocation } from '@capacitor/geolocation';
+  import { onMount, onDestroy } from 'svelte';
+  import { Motion } from '@capacitor/motion';
+  import { App } from '@capacitor/app';
 
-	export let navigate;
+  export let navigate;
 
-	// --- App State ---
-	let sensorData = {
-		accel: { x: 0, y: 0, z: 0 },
-		gyro: { alpha: 0, beta: 0, gamma: 0 },
-		motion: 0
-	};
-	let isAlarmActive = false;
-	
-	// --- Audio State ---
-	let audioContext = null;
-	let oscillator = null;
-	let pulseInterval = null;
-	let beepTimeout = null;
-	let emergencyAudio = null;
-	let playCount = 0;
+  // -- Component State --
+  let status = 'monitoring'; // 'monitoring', 'warning', 'trapped'
+  let countdown = 10;
+  let timer;
+  let motionListener;
+  let beep; // This will be bound to the audio element
+  let activeSignal = ''; // 'NAN' or 'BLE'
+  let currentBatteryLevel = 100; // Initialize with a default value
 
-	// --- Constants ---
-	const FALL_THRESHOLD = 30; // ~3g impact (m/s^2)
-	const WEBHOOK_URL = 'https://example.com/webhook'; // Placeholder URL
+  // -- Hackathon Algorithm: State & Parameters --
 
-	// --- Lifecycle Hooks ---
-	onMount(async () => {
-		const link = document.createElement('link');
-		link.href = 'https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500&display=swap';
-		link.rel = 'stylesheet';
-		document.head.appendChild(link);
+  // A low-pass filter helps smooth out noisy, high-frequency data from the accelerometer.
+  // A higher `filterFactor` means more smoothing. 0.0 means no smoothing.
+  const LOW_PASS_FILTER_FACTOR = 0.1;
+  let smoothedMagnitude = 0;
 
-		startSensors();
-		try {
-			await KeepAwake.keepAwake();
-		} catch (e) {
-			console.error("KeepAwake failed", e);
-		}
-	});
+  // -- Stage 1: Initial Jolt Detection --
+  // This threshold needs to be high enough to ignore everyday bumps.
+  // It acts as the "wake-up" call for the algorithm.
+  const TRIGGER_G_FORCE = 2.0; // Gs
 
-	onDestroy(async () => {
-		stopSensors();
-		stopAlarm();
-		try {
-			await KeepAwake.allowSleep();
-		} catch (e) {}
-	});
+  // -- Stage 2: Sustained Shaking Analysis --
+  // Once triggered, we enter a monitoring window to confirm a real earthquake.
+  const MONITORING_WINDOW_MS = 3000; // 3 seconds
 
-	// --- Sensor Handling ---
-	function startSensors() {
-		if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
-			window.addEventListener('devicemotion', handleMotion, true);
-			window.addEventListener('deviceorientation', handleOrientation, true);
-		}
-	}
+  // This threshold is lower. We're looking for continuous, significant shaking,
+  // not necessarily huge spikes.
+  const SUSTAINED_G_FORCE = 0.6; // Gs
+  
+  // We count how many times the G-force exceeds the sustained threshold.
+  const SUSTAINED_SHAKE_COUNT_THRESHOLD = 8;
 
-	function stopSensors() {
-		if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
-			window.removeEventListener('devicemotion', handleMotion, true);
-			window.removeEventListener('deviceorientation', handleOrientation, true);
-		}
-	}
+  // We also measure the "energy" of the event by accumulating the G-force.
+  // This helps differentiate a long, gentle wobble from a short, violent shake.
+  const ENERGY_THRESHOLD = 15;
 
-	function handleMotion(event) {
-		const { x, y, z } = event.accelerationIncludingGravity || { x:0, y:0, z:0 };
-		sensorData.accel = { 
-			x: (x || 0).toFixed(2), 
-			y: (y || 0).toFixed(2), 
-			z: (z || 0).toFixed(2) 
-		};
-		
-		const mag = Math.sqrt(x*x + y*y + z*z);
-		sensorData.motion = mag.toFixed(2);
+  let isMonitoring = false;
+  let monitoringStartTime = 0;
+  let sustainedShakeCount = 0;
+  let totalEnergy = 0;
 
-		if (mag > FALL_THRESHOLD) {
-			triggerAlarm();
-		}
-	}
+  // --- Functions ---
 
-	function handleOrientation(event) {
-		sensorData.gyro = {
-			alpha: (event.alpha || 0).toFixed(1),
-			beta: (event.beta || 0).toFixed(1),
-			gamma: (event.gamma || 0).toFixed(1)
-		};
-	}
+  function onBatteryStatus(status) {
+    currentBatteryLevel = status.level;
+  }
 
-	// --- Alarm Logic ---
-	async function triggerAlarm() {
-		if (isAlarmActive) return;
-		isAlarmActive = true;
-		
-		// 2. Play Alarm Sequence
-		playHighPitchSound();
+  async function triggerAlert() {
+    if (status !== 'monitoring') return;
+    
+    // Determine active signal based on current battery level
+    if (currentBatteryLevel > 40) {
+      activeSignal = 'NAN';
+    } else {
+      activeSignal = 'BLE';
+    }
 
-		// 3. Send Location Webhook
-		try {
-			const coordinates = await Geolocation.getCurrentPosition({
-				enableHighAccuracy: true,
-				timeout: 10000
-			});
+    if (beep) {
+      beep.currentTime = 0;
+      beep.play();
+    }
+    status = 'warning';
+    countdown = 10;
 
-			const { latitude, longitude } = coordinates.coords;
-			const mapLink = `https://maps.google.com/?q=${latitude},${longitude}`;
+    timer = setInterval(() => {
+      countdown -= 1;
+      if (countdown <= 0) {
+        clearInterval(timer);
+        status = 'trapped';
+        if (beep) beep.pause();
+      }
+    }, 1000);
+  }
 
-			const payload = {
-				type: "FALL_DETECTED",
-				timestamp: new Date().toISOString(),
-				location: mapLink,
-				lat: latitude,
-				lng: longitude
-			};
+  function resetDetectionState() {
+    isMonitoring = false;
+    monitoringStartTime = 0;
+    sustainedShakeCount = 0;
+    totalEnergy = 0;
+  }
 
-			await fetch(WEBHOOK_URL, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
-			});
-			console.log("Location sent:", mapLink);
+  function cancelAlarm() {
+    clearInterval(timer);
+    status = 'monitoring';
+    countdown = 10;
+    if (beep) {
+      beep.pause();
+      beep.currentTime = 0;
+    }
+    resetDetectionState();
+  }
 
-		} catch (err) {
-			console.error("Geolocation/Webhook Error:", err);
-		}
-	}
+  async function startMonitoring() {
+    try {
+      // Enable background mode for continuous operation
+      if (window.cordova && window.cordova.plugins.backgroundMode) {
+        window.cordova.plugins.backgroundMode.enable();
+        window.cordova.plugins.backgroundMode.requestIgnoreBatteryOptimizations();
+        window.cordova.plugins.backgroundMode.on('activate', () => {
+          window.cordova.plugins.backgroundMode.configure({
+              title: 'Safe-Q is running',
+              text: 'Monitoring for earthquakes in the background.'
+          });
+        });
+      }
 
-	function playHighPitchSound() {
-		try {
-			const AudioContext = window.AudioContext || window.webkitAudioContext;
-			if (!AudioContext) return;
+      // Request motion sensor permissions for iOS
+      if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+        const permission = await DeviceMotionEvent.requestPermission();
+        if (permission !== 'granted') return;
+      }
 
-			audioContext = new AudioContext();
-			oscillator = audioContext.createOscillator();
-			const gainNode = audioContext.createGain();
+      // -- Main Algorithm Listener --
+      motionListener = await Motion.addListener('accel', (event) => {
+        const { x, y, z } = event.acceleration;
+        const magnitude = Math.sqrt(x*x + y*y + z*z) / 9.81;
 
-			oscillator.type = 'square';
-			oscillator.frequency.setValueAtTime(3000, audioContext.currentTime);
-			
-			oscillator.frequency.exponentialRampToValueAtTime(4000, audioContext.currentTime + 0.1);
-			oscillator.frequency.exponentialRampToValueAtTime(3000, audioContext.currentTime + 0.2);
+        // Apply the low-pass filter to the raw magnitude
+        smoothedMagnitude = (magnitude * (1 - LOW_PASS_FILTER_FACTOR)) + (smoothedMagnitude * LOW_PASS_FILTER_FACTOR);
 
-			gainNode.gain.setValueAtTime(1, audioContext.currentTime); 
+        const now = Date.now();
 
-			oscillator.connect(gainNode);
-			gainNode.connect(audioContext.destination);
+        if (!isMonitoring) {
+          // STAGE 1: Look for the initial high-G jolt
+          if (smoothedMagnitude > TRIGGER_G_FORCE) {
+            isMonitoring = true;
+            monitoringStartTime = now;
+            sustainedShakeCount = 1; // The trigger event counts as the first shake
+            totalEnergy = smoothedMagnitude;
+          }
+        } else {
+          // STAGE 2: We are in the monitoring window
+          const elapsedTime = now - monitoringStartTime;
 
-			oscillator.start();
-			
-			pulseInterval = setInterval(() => {
-				if (oscillator && audioContext) {
-					const now = audioContext.currentTime;
-					oscillator.frequency.setValueAtTime(3000, now);
-					oscillator.frequency.linearRampToValueAtTime(4000, now + 0.1);
-				}
-			}, 200);
+          if (elapsedTime > MONITORING_WINDOW_MS) {
+            // -- Window has ended, time to decide --
+            if (sustainedShakeCount >= SUSTAINED_SHAKE_COUNT_THRESHOLD && totalEnergy >= ENERGY_THRESHOLD) {
+              triggerAlert();
+            }
+            // Reset for the next event
+            resetDetectionState();
+          } else {
+            // -- Still in the window, accumulate data --
+            totalEnergy += smoothedMagnitude;
+            if (smoothedMagnitude > SUSTAINED_G_FORCE) {
+              sustainedShakeCount++;
+            }
+          }
+        }
+      });
+    } catch (e) {
+      console.error("Failed to initialize sensors or background mode.", e);
+    }
+  }
 
-			beepTimeout = setTimeout(() => {
-				stopOscillator();
-				playEmergencyAudio();
-			}, 8000);
+  onMount(() => {
+    App.addListener('appStateChange', ({ isActive }) => {
+      // Logic for background state can be added here if needed
+    });
 
-		} catch (e) {
-			console.error("Audio error", e);
-		}
-	}
+    window.addEventListener("batterystatus", onBatteryStatus, false);
+    
+    startMonitoring();
+  });
 
-	function stopOscillator() {
-		if (pulseInterval) {
-			clearInterval(pulseInterval);
-			pulseInterval = null;
-		}
-		if (oscillator) {
-			try {
-				oscillator.stop();
-				oscillator.disconnect();
-			} catch (e) {}
-			oscillator = null;
-		}
-		if (audioContext) {
-			try {
-				audioContext.close();
-			} catch (e) {}
-			audioContext = null;
-		}
-	}
-
-	function playEmergencyAudio() {
-		if (emergencyAudio) return;
-
-		playCount = 0;
-		emergencyAudio = new Audio('/emergency_guide.wav');
-		
-		emergencyAudio.addEventListener('ended', () => {
-			playCount++;
-			if (playCount < 3) {
-				emergencyAudio.currentTime = 0;
-				emergencyAudio.play();
-			} else {
-				emergencyAudio = null;
-			}
-		});
-
-		emergencyAudio.play().catch(e => console.error("Play failed", e));
-	}
-
-	function stopAlarm() {
-		isAlarmActive = false;
-		
-		if (beepTimeout) {
-			clearTimeout(beepTimeout);
-			beepTimeout = null;
-		}
-		stopOscillator();
-
-		if (emergencyAudio) {
-			emergencyAudio.pause();
-			emergencyAudio = null;
-		}
-		playCount = 0;
-	}
+  onDestroy(() => {
+    if (motionListener) motionListener.remove();
+    if (timer) clearInterval(timer);
+    window.removeEventListener("batterystatus", onBatteryStatus, false);
+    if (window.cordova && window.cordova.plugins.backgroundMode) {
+      window.cordova.plugins.backgroundMode.disable();
+    }
+  });
 </script>
 
 <div class="w-full">
-	{#if !isAlarmActive}
-		<div class="flex flex-col items-center justify-center text-gray-800 space-y-4">
-			<h1 class="text-2xl font-bold tracking-wider">Monitoring for Falls...</h1>
-			<p class="text-gray-600">This app is continuously monitoring for sudden impacts.</p>
-			<div class="text-xs text-gray-400 font-mono">
-				<p>Accel: {sensorData.accel.x}, {sensorData.accel.y}, {sensorData.accel.z}</p>
-				<p>Gyro: {sensorData.gyro.alpha}, {sensorData.gyro.beta}, {sensorData.gyro.gamma}</p>
-				<p>Motion: {sensorData.motion} m/s²</p>
-			</div>
-		</div>
-	{:else}
-		<div class="text-gray-800">
-			<h2 class="text-xl font-bold uppercase tracking-widest text-red-600 animate-pulse">FALL DETECTED</h2>
-			<p class="mt-4">Broadcasting for help. Do you want to cancel?</p>
-		</div>
-		<button on:click={stopAlarm} class="btn btn-victim mt-8">
-			CANCEL ALARM
-		</button>
-	{/if}
+  {#if status === 'monitoring'}
+    <div class="flex flex-col items-center justify-center text-gray-800 space-y-4">
+      <h1 class="text-2xl font-bold tracking-wider">Monitoring...</h1>
+      <p class="text-gray-600">This app is continuously monitoring for earthquakes.</p>
+      <div class="text-xs text-gray-400">
+        (G-Force: {smoothedMagnitude.toFixed(2)})
+      </div>
+    </div>
+  {:else if status === 'warning'}
+    <div class="text-gray-800">
+      <h2 class="text-xl font-bold uppercase tracking-widest">Impact Detected</h2>
+      <h1 class="text-9xl font-bold my-4">{countdown}</h1>
+      <p>Are you okay?</p>
+    </div>
+    <button on:click={cancelAlarm} class="btn btn-victim">
+      I AM SAFE
+    </button>
+  {:else if status === 'trapped'}
+    <div class="flex flex-col items-center justify-center text-red-800 space-y-4">
+      <h1 class="text-3xl font-bold tracking-wider animate-pulse">SOS BROADCASTING</h1>
+      <p class="text-red-600">{activeSignal} Signal Active (Battery: {currentBatteryLevel}%)</p>
+    </div>
+  {/if}
 
-	<div class="mt-10">
-		<button on:click={() => navigate('home')} class="text-gray-500">Back to Home</button>
-	</div>
+  <div class="mt-10">
+      <button on:click={() => navigate('home')} class="text-gray-500">Back to Home</button>
+  </div>
+
+  <audio bind:this={beep} src="data:audio/wav;base64,UklGRuBXBwBXQVZFZm10IBAAAAABAAEAgLsAAAB3AQACABAAZGF0YVpUBwCx/5T/O/9P/3j/mP90/3b/ZP9G/zL/R/9S/4z/n/+4/7n/tf+d/yH/dv6i/e38avwp/B79KP/zAPcAs//E/tX+Lf+e/7wA" preload="auto" playsinline></audio>
 </div>
