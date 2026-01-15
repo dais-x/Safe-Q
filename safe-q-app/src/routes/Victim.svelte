@@ -2,11 +2,10 @@
   import { onMount, onDestroy } from 'svelte';
   import { Motion } from '@capacitor/motion';
   import { App } from '@capacitor/app';
-  // Note: @capacitor/battery was removed due to build issues.
-  // Using cordova-plugin-battery-status directly via window.addEventListener('batterystatus')
 
   export let navigate;
 
+  // -- Component State --
   let status = 'monitoring'; // 'monitoring', 'warning', 'trapped'
   let countdown = 10;
   let timer;
@@ -15,20 +14,42 @@
   let activeSignal = ''; // 'NAN' or 'BLE'
   let currentBatteryLevel = 100; // Initialize with a default value
 
-  // Algorithm state
-  let shakeCount = 0;
-  let shakeWindowStart = 0;
-  let lastShakeTime = 0;
+  // -- Hackathon Algorithm: State & Parameters --
 
-  // Algorithm parameters
-  const G_FORCE_THRESHOLD = 0.7; // Gs
-  const SHAKE_COUNT_THRESHOLD = 3; // Number of shakes in time window
-  const SHAKE_TIME_WINDOW = 1000; // ms (how long to count shakes)
-  const SHAKE_DEBOUNCE_TIME = 200; // ms (min time between shakes to count as distinct)
+  // A low-pass filter helps smooth out noisy, high-frequency data from the accelerometer.
+  // A higher `filterFactor` means more smoothing. 0.0 means no smoothing.
+  const LOW_PASS_FILTER_FACTOR = 0.1;
+  let smoothedMagnitude = 0;
+
+  // -- Stage 1: Initial Jolt Detection --
+  // This threshold needs to be high enough to ignore everyday bumps.
+  // It acts as the "wake-up" call for the algorithm.
+  const TRIGGER_G_FORCE = 2.0; // Gs
+
+  // -- Stage 2: Sustained Shaking Analysis --
+  // Once triggered, we enter a monitoring window to confirm a real earthquake.
+  const MONITORING_WINDOW_MS = 3000; // 3 seconds
+
+  // This threshold is lower. We're looking for continuous, significant shaking,
+  // not necessarily huge spikes.
+  const SUSTAINED_G_FORCE = 0.6; // Gs
+  
+  // We count how many times the G-force exceeds the sustained threshold.
+  const SUSTAINED_SHAKE_COUNT_THRESHOLD = 8;
+
+  // We also measure the "energy" of the event by accumulating the G-force.
+  // This helps differentiate a long, gentle wobble from a short, violent shake.
+  const ENERGY_THRESHOLD = 15;
+
+  let isMonitoring = false;
+  let monitoringStartTime = 0;
+  let sustainedShakeCount = 0;
+  let totalEnergy = 0;
+
+  // --- Functions ---
 
   function onBatteryStatus(status) {
     currentBatteryLevel = status.level;
-    console.log("Battery Level: " + status.level + "%, isPlugged: " + status.isPlugged);
   }
 
   async function triggerAlert() {
@@ -42,7 +63,7 @@
     }
 
     if (beep) {
-      beep.currentTime = 0; // Rewind to start
+      beep.currentTime = 0;
       beep.play();
     }
     status = 'warning';
@@ -53,11 +74,16 @@
       if (countdown <= 0) {
         clearInterval(timer);
         status = 'trapped';
-        if (beep) {
-          beep.pause();
-        }
+        if (beep) beep.pause();
       }
     }, 1000);
+  }
+
+  function resetDetectionState() {
+    isMonitoring = false;
+    monitoringStartTime = 0;
+    sustainedShakeCount = 0;
+    totalEnergy = 0;
   }
 
   function cancelAlarm() {
@@ -68,21 +94,16 @@
       beep.pause();
       beep.currentTime = 0;
     }
-    // Reset shake detection state
-    shakeCount = 0;
-    shakeWindowStart = 0;
-    lastShakeTime = 0;
+    resetDetectionState();
   }
 
   async function startMonitoring() {
     try {
-      // Enable background mode
-      if (window.cordova && window.cordova.plugins && window.cordova.plugins.backgroundMode) {
+      // Enable background mode for continuous operation
+      if (window.cordova && window.cordova.plugins.backgroundMode) {
         window.cordova.plugins.backgroundMode.enable();
         window.cordova.plugins.backgroundMode.requestIgnoreBatteryOptimizations();
-
         window.cordova.plugins.backgroundMode.on('activate', () => {
-          console.log('Background mode activated');
           window.cordova.plugins.backgroundMode.configure({
               title: 'Safe-Q is running',
               text: 'Monitoring for earthquakes in the background.'
@@ -90,46 +111,48 @@
         });
       }
 
-      // Request permission for motion sensors on iOS 13+
+      // Request motion sensor permissions for iOS
       if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
         const permission = await DeviceMotionEvent.requestPermission();
-        if (permission !== 'granted') {
-          console.error('Permission for motion sensors not granted.');
-          return;
-        }
+        if (permission !== 'granted') return;
       }
 
+      // -- Main Algorithm Listener --
       motionListener = await Motion.addListener('accel', (event) => {
         const { x, y, z } = event.acceleration;
-        // Convert m/s^2 to G-force (approx 9.81 m/s^2 per G)
         const magnitude = Math.sqrt(x*x + y*y + z*z) / 9.81;
+
+        // Apply the low-pass filter to the raw magnitude
+        smoothedMagnitude = (magnitude * (1 - LOW_PASS_FILTER_FACTOR)) + (smoothedMagnitude * LOW_PASS_FILTER_FACTOR);
 
         const now = Date.now();
 
-        if (magnitude > G_FORCE_THRESHOLD && (now - lastShakeTime > SHAKE_DEBOUNCE_TIME)) {
-          lastShakeTime = now;
-          if (shakeCount === 0) {
-            shakeWindowStart = now;
+        if (!isMonitoring) {
+          // STAGE 1: Look for the initial high-G jolt
+          if (smoothedMagnitude > TRIGGER_G_FORCE) {
+            isMonitoring = true;
+            monitoringStartTime = now;
+            sustainedShakeCount = 1; // The trigger event counts as the first shake
+            totalEnergy = smoothedMagnitude;
           }
-          shakeCount++;
-        }
+        } else {
+          // STAGE 2: We are in the monitoring window
+          const elapsedTime = now - monitoringStartTime;
 
-        // Check if enough shakes happened within the time window
-        if (shakeCount > 0 && (now - shakeWindowStart > SHAKE_TIME_WINDOW)) {
-          if (shakeCount >= SHAKE_COUNT_THRESHOLD) {
-            triggerAlert();
+          if (elapsedTime > MONITORING_WINDOW_MS) {
+            // -- Window has ended, time to decide --
+            if (sustainedShakeCount >= SUSTAINED_SHAKE_COUNT_THRESHOLD && totalEnergy >= ENERGY_THRESHOLD) {
+              triggerAlert();
+            }
+            // Reset for the next event
+            resetDetectionState();
+          } else {
+            // -- Still in the window, accumulate data --
+            totalEnergy += smoothedMagnitude;
+            if (smoothedMagnitude > SUSTAINED_G_FORCE) {
+              sustainedShakeCount++;
+            }
           }
-          // Reset for next detection cycle
-          shakeCount = 0;
-          shakeWindowStart = 0;
-        } else if (shakeCount > 0 && (now - shakeWindowStart < SHAKE_TIME_WINDOW)) {
-          // If a shake is detected within the window, but not enough to trigger,
-          // ensure we don't accidentally reset too early by a false negative
-          // e.g. if the G-force momentarily drops below threshold but activity resumes
-          // This else-if is mainly to prevent resetting if still within active window
-        } else if (shakeCount > 0) { // If G-force has been low for a while after some shakes
-          shakeCount = 0;
-          shakeWindowStart = 0;
         }
       });
     } catch (e) {
@@ -139,32 +162,18 @@
 
   onMount(() => {
     App.addListener('appStateChange', ({ isActive }) => {
-      if (!isActive) {
-        // App is in background
-      }
+      // Logic for background state can be added here if needed
     });
 
-    // Add battery status listener
     window.addEventListener("batterystatus", onBatteryStatus, false);
-    // Initial battery check
-    if (window.cordova && window.cordova.plugins && window.cordova.plugins.BatteryStatus) {
-      window.cordova.plugins.BatteryStatus.getBatteryStatus(onBatteryStatus);
-    }
-
+    
     startMonitoring();
   });
 
   onDestroy(() => {
-    if (motionListener) {
-      motionListener.remove();
-    }
-    if (timer) {
-      clearInterval(timer);
-    }
-    // Remove battery status listener
+    if (motionListener) motionListener.remove();
+    if (timer) clearInterval(timer);
     window.removeEventListener("batterystatus", onBatteryStatus, false);
-
-    // Optional: disable background mode when the component is destroyed
     if (window.cordova && window.cordova.plugins.backgroundMode) {
       window.cordova.plugins.backgroundMode.disable();
     }
@@ -176,6 +185,9 @@
     <div class="flex flex-col items-center justify-center text-gray-800 space-y-4">
       <h1 class="text-2xl font-bold tracking-wider">Monitoring...</h1>
       <p class="text-gray-600">This app is continuously monitoring for earthquakes.</p>
+      <div class="text-xs text-gray-400">
+        (G-Force: {smoothedMagnitude.toFixed(2)})
+      </div>
     </div>
   {:else if status === 'warning'}
     <div class="text-gray-800">
