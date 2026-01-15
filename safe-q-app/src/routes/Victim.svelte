@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { Motion } from '@capacitor/motion';
   import { App } from '@capacitor/app';
-  // import { Battery } from '@capacitor/battery'; // Commented out due to build issues
+  // Note: @capacitor/battery was removed due to build issues.
+  // Using cordova-plugin-battery-status directly via window.addEventListener('batterystatus')
 
   export let navigate;
 
@@ -12,6 +13,7 @@
   let motionListener;
   let beep; // This will be bound to the audio element
   let activeSignal = ''; // 'NAN' or 'BLE'
+  let currentBatteryLevel = 100; // Initialize with a default value
 
   // Algorithm state
   let shakeCount = 0;
@@ -24,17 +26,20 @@
   const SHAKE_TIME_WINDOW = 1000; // ms (how long to count shakes)
   const SHAKE_DEBOUNCE_TIME = 200; // ms (min time between shakes to count as distinct)
 
+  function onBatteryStatus(status) {
+    currentBatteryLevel = status.level;
+    console.log("Battery Level: " + status.level + "%, isPlugged: " + status.isPlugged);
+  }
+
   async function triggerAlert() {
     if (status !== 'monitoring') return;
     
-    // Battery check logic (temporarily commented out/simplified until cordova-plugin-battery-status is integrated)
-    // const batteryStatus = await Battery.getStatus();
-    // if (batteryStatus.batteryLevel > 0.4) {
-    //   activeSignal = 'NAN';
-    // } else {
-    //   activeSignal = 'BLE';
-    // }
-    activeSignal = 'BLE'; // Default to BLE for now
+    // Determine active signal based on current battery level
+    if (currentBatteryLevel > 40) {
+      activeSignal = 'NAN';
+    } else {
+      activeSignal = 'BLE';
+    }
 
     if (beep) {
       beep.currentTime = 0; // Rewind to start
@@ -139,6 +144,13 @@
       }
     });
 
+    // Add battery status listener
+    window.addEventListener("batterystatus", onBatteryStatus, false);
+    // Initial battery check
+    if (window.cordova && window.cordova.plugins && window.cordova.plugins.BatteryStatus) {
+      window.cordova.plugins.BatteryStatus.getBatteryStatus(onBatteryStatus);
+    }
+
     startMonitoring();
   });
 
@@ -149,6 +161,9 @@
     if (timer) {
       clearInterval(timer);
     }
+    // Remove battery status listener
+    window.removeEventListener("batterystatus", onBatteryStatus, false);
+
     // Optional: disable background mode when the component is destroyed
     if (window.cordova && window.cordova.plugins.backgroundMode) {
       window.cordova.plugins.backgroundMode.disable();
@@ -174,7 +189,7 @@
   {:else if status === 'trapped'}
     <div class="flex flex-col items-center justify-center text-red-800 space-y-4">
       <h1 class="text-3xl font-bold tracking-wider animate-pulse">SOS BROADCASTING</h1>
-      <p class="text-red-600">{activeSignal} Signal Active</p>
+      <p class="text-red-600">{activeSignal} Signal Active (Battery: {currentBatteryLevel}%)</p>
     </div>
   {/if}
 
